@@ -1,0 +1,310 @@
+{% extends "_base.html" %}
+{% from "_components.html" import button, info_pop, number_input, section_card, select_field, text_input with context %}
+{% block title %}Comics, Strips, Tesserae{% endblock %}
+{% block head_extra %}<script src="{{ url_for('plugins.plugin_asset', plugin_id=plugin_id, asset='static/admin.js') }}" defer></script>{% endblock %}
+
+{#- Every change on this page is a plain form that posts, saves and comes
+    back to the card it came from, so it all works without JavaScript;
+    static/admin.js only swaps the preview in place, asks before a strip
+    is removed and starts the log on its newest line. -#}
+
+{#- A source's state as the app's small chip. -#}
+{% macro chip(item) -%}
+  {%- if item.chip %}<span class="tg tg--sm{% if item.tone %} tg--{{ item.tone }}{% endif %} cx-chip">{{ item.chip }}</span>{% endif -%}
+{%- endmacro %}
+
+{#- An xkcd comic's title, credit and alt text under its picture. -#}
+{% macro caption(p) -%}
+  {%- if p.credit %}<p class="cx-cap">{% if p.title %}<strong>{{ p.title }}</strong> {% endif %}<span class="cx-cap-credit">{{ p.credit }}</span>{% if p.alt %}<br>{{ p.alt }}{% endif %}</p>{% endif -%}
+{%- endmacro %}
+
+{#- A switch as the settings cards draw one: label and line on the left,
+    the switch on the right. Unticked, the browser posts nothing for it,
+    which the save reads as off. -#}
+{% macro toggle_row(field_id, name, label, desc, checked, extra_class='') -%}
+  <div class="dx-toggle-row{% if extra_class %} {{ extra_class }}{% endif %}">
+    <div class="dx-toggle-row-text">
+      <label class="dx-toggle-row-label" for="{{ field_id }}">{{ label }}</label>
+      {%- if desc %}<p class="dx-toggle-row-desc">{{ desc }}</p>{% endif %}
+    </div>
+    <label class="dx-toggle-switch" for="{{ field_id }}">
+      <input id="{{ field_id }}" type="checkbox" name="{{ name }}" value="on"{% if checked %} checked{% endif %}>
+      <span class="dx-toggle-track" aria-hidden="true"><span class="dx-toggle-knob"></span></span>
+    </label>
+  </div>
+{%- endmacro %}
+
+{% block main %}
+{% set source_help = "xkcd fetches a comic from xkcd's own API each day. Direct image URL downloads the Image URL each day. Manual upload shows the picture you upload." %}
+{% set pick_help = "For xkcd: the latest comic (xkcd posts Monday, Wednesday and Friday), or a random one from the archive, a new one each day." %}
+{% set url_help = "For Direct image URL: the address of a picture on the public web, downloaded again each day." %}
+
+<div class="page-head">
+  <h1><i class="ph ph-smiley" aria-hidden="true"></i> Comics, Strips</h1>
+  <p class="page-blurb">Your strips, fetched once a day for every comics cell: xkcd, any picture address, or a picture you upload. When a download fails, the last good strip stays up. xkcd is by Randall Munroe (<a href="https://xkcd.com/license.html" target="_blank" rel="noopener noreferrer">CC BY-NC 2.5</a>) and is credited to xkcd.com under each comic.</p>
+</div>
+
+<div class="settings-section-list">
+{% call section_card(icon='smiley', title="Today's comics", id='today') %}
+  <div class="cx-today-head">
+    <p class="lede">{{ view.lede }}</p>
+    <form method="post" action="{{ url_for(endpoint ~ '.fetch_now') }}" class="cx-fetch">
+      {% if view.running %}
+        <button type="button" class="ghost" disabled><i class="ph ph-arrows-clockwise" aria-hidden="true"></i><span>Fetching…</span></button>
+      {% else %}
+        {{ button('Fetch now', icon='arrows-clockwise') }}
+      {% endif %}
+    </form>
+  </div>
+  <div class="cx-today">
+  {#- The preview: one screen at a time, the user's own first. All are
+      drawn; the picker shows one (in place with JavaScript, else its
+      Show button reloads the page on that screen). -#}
+  {%- set default = view.screen_default %}
+  <aside class="cx-onscreen" aria-labelledby="cx-screen-pick-label">
+    <form method="get" action="{{ url_for(endpoint ~ '.index') }}" class="cx-screen-form">
+      <label class="cx-onscreen-label" id="cx-screen-pick-label" for="cx-screen-pick">Preview on</label>
+      <div class="cx-screen-pick-row">
+        <select id="cx-screen-pick" name="screen" class="dx-input cx-screen-pick" data-screen-pick>
+          {%- for group in ['Your screens', 'Reference screens'] %}
+          {%- set screens = view.screens | selectattr('group', 'equalto', group) | list %}
+          {%- if screens %}
+          <optgroup label="{{ group }}">
+            {%- for sc in screens %}
+            <option value="{{ sc.id }}"{% if sc.id == default %} selected{% endif %}>{{ sc.name }} ({{ sc.w }}×{{ sc.h }})</option>
+            {%- endfor %}
+          </optgroup>
+          {%- endif %}
+          {%- endfor %}
+        </select>
+        <noscript><button type="submit" class="dx-btn-ghost-sm">Show</button></noscript>
+      </div>
+    </form>
+    {%- for sc in view.screens %}
+    <figure class="cx-screen" data-screen="{{ sc.id }}"{% if sc.id != default %} hidden{% endif %}>
+      <div class="cx-screen-frame" style="--sw: {{ sc.w }}; --sh: {{ sc.h }}">
+        {%- for item in sc.shown %}
+          <img class="cx-screen-strip" src="{{ request.script_root }}{{ item.picture.src }}" alt="{{ item.label }}" loading="lazy">
+          {%- if item.caption %}<p class="cx-screen-cap">{{ item.caption | join(' ') }}</p>{% endif %}
+        {%- endfor %}
+      </div>
+      <figcaption>{{ sc.text }}</figcaption>
+    </figure>
+    {%- endfor %}
+    <p class="cx-onscreen-note">Comics never shrink past reading size or get cut off. When they don't all fit, they take turns.</p>
+  </aside>
+  <div class="cx-preview">
+    {% for item in view.preview %}
+    <section class="cx-source" aria-label="{{ item.label }}">
+      <p class="cx-source-head"><strong>{{ item.label }}</strong>{{ chip(item) }}<span class="cx-source-line">{{ item.line }}</span></p>
+      {% if item.pictures %}
+      <img class="cx-strip" src="{{ request.script_root }}{{ item.pictures[0].src }}" alt="{{ item.label }}" width="{{ item.pictures[0].w }}" height="{{ item.pictures[0].h }}" loading="lazy">
+      {{ caption(item.pictures[0]) }}
+      {% endif %}
+      {% if item.warning %}<div class="dx-warn-band cx-warn"><i class="ph ph-warning" aria-hidden="true"></i><p>{{ item.warning }}</p></div>{% endif %}
+    </section>
+    {% endfor %}
+    {% for p in view.problems %}
+    <section class="cx-source" aria-label="{{ p.name }}">
+      <p class="cx-source-head"><strong>{{ p.name }}</strong><span class="tg tg--sm tg--bad cx-chip">Can't show</span><span class="cx-source-line">{{ p.message }}</span></p>
+    </section>
+    {% endfor %}
+  </div>
+  </div>
+{% endcall %}
+
+{% call section_card(icon='film-strip', title='Strips', id='strips',
+                     description="Your strips, top to bottom. Switch one off to keep it in the list without showing it.") %}
+  <ol class="cx-rows">
+  {%- for row in rows %}
+    {%- set st = view.strips.get(row.slug) or {'label': row.label or row.slug, 'chip': '', 'line': '', 'warning': '', 'kind': ''} %}
+    {%- set label = row.label or st.label %}
+    {%- set fid = 'cx-strip-' ~ row.slug %}
+    <li class="cx-row{% if not row.enabled %} cx-row--off{% endif %}" id="strip-{{ row.slug }}" data-strip="{{ row.slug }}">
+      <div class="cx-row-head">
+        <span class="cx-row-num" aria-hidden="true">{{ loop.index }}</span>
+        <p class="cx-row-title"><strong>{{ label }}</strong>{{ chip(st) }}</p>
+        <form method="post" action="{{ url_for(endpoint ~ '.move_strip', slug=row.slug) }}" class="cx-row-ops">
+          <button type="submit" name="direction" value="up" class="dx-btn-ghost-sm dx-btn-icon-only" title="Move up" aria-label="Move {{ label }} up"{% if loop.first %} disabled{% endif %}><i class="ph ph-arrow-up" aria-hidden="true"></i></button>
+          <button type="submit" name="direction" value="down" class="dx-btn-ghost-sm dx-btn-icon-only" title="Move down" aria-label="Move {{ label }} down"{% if loop.last %} disabled{% endif %}><i class="ph ph-arrow-down" aria-hidden="true"></i></button>
+          {%- if row.enabled %}
+          <button type="submit" formaction="{{ url_for(endpoint ~ '.switch_strip', slug=row.slug) }}" name="enabled" value="off" class="dx-btn-ghost-sm" aria-label="Switch {{ label }} off"><i class="ph ph-eye-slash" aria-hidden="true"></i><span>Switch off</span></button>
+          {%- else %}
+          <button type="submit" formaction="{{ url_for(endpoint ~ '.switch_strip', slug=row.slug) }}" name="enabled" value="on" class="dx-btn-ghost-sm" aria-label="Switch {{ label }} on"><i class="ph ph-eye" aria-hidden="true"></i><span>Switch on</span></button>
+          {%- endif %}
+          <button type="submit" formaction="{{ url_for(endpoint ~ '.remove_strip', slug=row.slug) }}" class="dx-btn-ghost-sm dx-btn-icon-only cx-remove" title="Remove" aria-label="Remove {{ label }}" data-confirm="Remove {{ label }} from the list?"><i class="ph ph-trash" aria-hidden="true"></i></button>
+        </form>
+      </div>
+      <p class="cx-status-line">{% if st.kind %}<span class="cx-kind">{{ st.kind }}</span>{% endif %}{{ st.line }}</p>
+      {%- if st.warning %}
+      <div class="dx-warn-band cx-warn"><i class="ph ph-warning" aria-hidden="true"></i><p>{{ st.warning }}</p></div>
+      {%- endif %}
+      <details class="dx-disclosure cx-edit"{% if st.warning %} open{% endif %}>
+        <summary><i class="ph ph-caret-right" aria-hidden="true"></i><span>Edit or upload</span></summary>
+        <div class="dx-disclosure-body">
+          <form method="post" action="{{ url_for(endpoint ~ '.edit_strip', slug=row.slug) }}" class="cx-edit-form">
+            <div class="field-grid">
+              {{ text_input(fid ~ '-label', 'label', 'Label', row.label, placeholder=st.label, help="The name the page and its notes use. Leave it blank for the default.") }}
+              {{ select_field(fid ~ '-mode', 'mode', 'Source', row.mode, mode_choices, help=source_help) }}
+              {{ select_field(fid ~ '-pick', 'pick', 'Which xkcd comic', row.pick, pick_choices, help=pick_help) }}
+              {{ text_input(fid ~ '-image_url', 'image_url', 'Image URL', row.image_url, placeholder='https://…', autocapitalize='off', help=url_help) }}
+            </div>
+            <div class="cx-edit-actions">
+              <button type="submit" class="dx-btn-ghost-sm"><i class="ph ph-floppy-disk" aria-hidden="true"></i><span>Save strip</span></button>
+            </div>
+          </form>
+          <form method="post" enctype="multipart/form-data" action="{{ url_for(endpoint ~ '.upload_strip', slug=row.slug) }}" class="cx-tools">
+            <input type="file" name="file" id="{{ fid }}-file" class="cx-file"
+                   accept="image/png,image/jpeg,image/gif,image/webp" aria-label="Picture to upload for {{ label }}">
+            <button type="submit" class="dx-btn-ghost-sm"><i class="ph ph-upload-simple" aria-hidden="true"></i><span>Upload strip</span></button>
+          </form>
+          <p class="field-help cx-tools-help">Uploading a picture switches this strip to Manual upload. PNG, JPEG, GIF or WebP, up to {{ upload_mb }} MB.</p>
+        </div>
+      </details>
+    </li>
+  {%- endfor %}
+  </ol>
+
+  {%- if rows | length < max_strips %}
+  <form method="post" action="{{ url_for(endpoint ~ '.add_strip') }}" class="cx-add">
+    <div class="cx-add-fields">
+      {{ select_field('cx-add-mode', 'mode', 'Source', 'xkcd', mode_choices) }}
+      {{ text_input('cx-add-label', 'label', 'Label', '', placeholder='xkcd') }}
+      {{ select_field('cx-add-pick', 'pick', 'Which xkcd comic', 'latest', pick_choices) }}
+      {{ text_input('cx-add-image_url', 'image_url', 'Image URL', '', placeholder='https://…', autocapitalize='off') }}
+    </div>
+    <button type="submit" class="dx-btn-ghost-sm"><i class="ph ph-plus" aria-hidden="true"></i><span>Add strip</span></button>
+  </form>
+  {%- else %}
+  <p class="field-help cx-add-full">The list holds at most {{ max_strips }} strips: remove one to add another.</p>
+  {%- endif %}
+{% endcall %}
+
+{% call section_card(icon='layout', title='Layout', id='layout',
+                     description="How the comics share a cell, in every comics cell.") %}
+  <form method="post" action="{{ url_for(endpoint ~ '.save_layout') }}" class="cx-card-form">
+    {{ select_field('cx-small_screens', 'small_screens', 'On small screens', values.small_screens, small_screen_choices,
+                    help="When a screen is too small (or too wide) to show every comic at a size you can read. Comics never shrink or get cut off; instead they take turns, a new set each refresh. The preview at the top shows what each screen gets.") }}
+    <fieldset class="cx-space">
+      <legend class="cx-space-legend">Space between comics <span class="cx-unit">px</span>{{ info_pop("The empty space between one comic and the next, in pixels on a 1440 px wide screen; narrower cells scale it down. It sits at Usual, grows toward Largest when there's height to spare, and shrinks toward Smallest to fit one more comic.") }}</legend>
+      <div class="cx-gaps">
+        {%- for name, short in [('gap_min', 'Smallest'), ('gap', 'Usual'), ('gap_max', 'Largest')] %}
+        {%- set _, _, lo, hi = numbers[name] %}
+        {{ number_input('cx-' ~ name, name, short, value=values[name], min=lo, max=hi, step=1) }}
+        {%- endfor %}
+      </div>
+    </fieldset>
+    {{ toggle_row('cx-captions', 'captions', 'xkcd captions', "The title and alt text under an xkcd comic. The xkcd.com credit always shows.", values.captions) }}
+    {{ toggle_row('cx-status_note', 'status_note', 'Out-of-date note', "A small line at the foot of the comics naming any that couldn't be updated today.", values.status_note) }}
+    <div class="cx-card-actions">{{ button('Save', icon='floppy-disk') }}</div>
+  </form>
+{% endcall %}
+
+{% call section_card(icon='list-checks', title='Fetches', id='log',
+                     description="Every fetch (OK, unchanged or error) with the comic, size and time taken, and every upload and added strip. Newest at the bottom.") %}
+  {% if view.log %}
+  <div class="dx-code dx-log-view cx-log" data-log-tail tabindex="0" aria-label="Fetch log">
+    {%- for e in view.log %}
+    <div class="cx-log-line{% if e.tone %} cx-log-line--{{ e.tone }}{% endif %}"><span class="cx-log-when">{{ e.when }}</span><span class="cx-log-source">{{ e.source }}</span><span class="cx-log-outcome">{{ e.outcome | upper }}</span><span class="cx-log-text">{{ e.text }}</span></div>
+    {%- endfor %}
+  </div>
+  {% else %}
+  <p class="field-help">Nothing fetched yet.</p>
+  {% endif %}
+{% endcall %}
+</div>
+
+<style>
+  .cx-today-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+  .cx-today-head .lede { margin: 0; flex: 1 1 320px; }
+  .cx-fetch { margin: 0; flex: none; }
+  /* Today: the preview of one screen on the left (about 30%), the comics
+     one by one on the right. On a phone the preview comes first. */
+  .cx-today { display: grid; grid-template-columns: minmax(264px, 3fr) minmax(0, 7fr); gap: 32px; align-items: start; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--t-border); }
+  .cx-onscreen { position: sticky; top: 16px; display: flex; flex-direction: column; gap: 12px; padding: 14px; background: var(--t-surface-sunk); border: 1px solid var(--t-border); border-radius: var(--t-radius); }
+  .cx-screen-form { display: flex; flex-direction: column; gap: 6px; margin: 0; }
+  .cx-screen-pick-row { display: flex; gap: 8px; align-items: center; }
+  .cx-screen-pick-row .cx-screen-pick { flex: 1 1 auto; min-width: 0; }
+  .cx-onscreen-label { font-family: var(--t-font-mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--t-muted); }
+  .cx-screen-pick.dx-input { padding: 8px 30px 8px 11px; font-size: 13px; text-overflow: ellipsis; border-radius: var(--t-radius); }
+  .cx-screen { margin: 0; }
+  /* The screen at its own shape, as tall as the window allows. */
+  .cx-screen-frame { --fit: min(62vh, 560px); box-sizing: border-box; aspect-ratio: var(--sw) / var(--sh); width: min(100%, calc(var(--fit) * var(--sw) / var(--sh))); margin: 0 auto; padding: 4px; overflow: hidden; display: flex; flex-direction: column; justify-content: center; gap: 4px; background: #fff; border: 1px solid var(--t-border-strong); }
+  .cx-screen-strip { display: block; width: 100%; height: auto; min-height: 0; object-fit: contain; }
+  .cx-screen figcaption { margin-top: 10px; font-size: 12.5px; line-height: 1.5; color: var(--t-fg-soft); }
+  .cx-onscreen-note { margin: 0; padding-top: 10px; border-top: 1px solid var(--t-border); font-size: 12px; line-height: 1.5; color: var(--t-muted); }
+  .cx-source { padding: 14px 0; border-bottom: 1px solid var(--t-border); }
+  .cx-preview > .cx-source:first-child { padding-top: 0; }
+  .cx-source:last-child { border-bottom: 0; padding-bottom: 0; }
+  .cx-source-head { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; margin: 0 0 10px; font-size: 14px; }
+  .cx-source-line { font-size: 12.5px; color: var(--t-muted); }
+  .cx-chip { flex: none; }
+  .cx-strip { display: block; width: 100%; height: auto; max-width: 460px; background: #fff; border: 1px solid var(--t-border); }
+  .cx-cap { margin: 6px 0 0; max-width: 460px; font-size: 12.5px; line-height: 1.45; color: var(--t-fg-soft); }
+  .cx-cap-credit { color: var(--t-muted); }
+  .cx-screen-cap { margin: 0; font-size: 6px; line-height: 1.25; color: #333; overflow-wrap: anywhere; }
+  .cx-add-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0 16px; flex: 1 1 100%; }
+  .cx-add-fields > .field { margin-top: 0; border-top: 0; }
+  .cx-warn { margin: 10px 0 0; }
+  /* A card's own form: its rows ruled like the settings cards' rows. */
+  .cx-card-form { display: flex; flex-direction: column; margin: 0; }
+  .cx-card-form > .dx-toggle-row { border-bottom: 0; }
+  .cx-card-form > * + :not(.cx-card-actions) { border-top: 1px solid var(--dx-border-faint, #f1f0eb); }
+  .cx-card-actions { display: flex; justify-content: flex-end; padding-top: 14px; }
+  /* The strips: a row each, in order, its tools under a disclosure. */
+  .cx-rows { list-style: none; margin: 4px 0 0; padding: 0; }
+  .cx-row { padding: 14px 0; border-bottom: 1px solid var(--dx-border-faint, #f1f0eb); scroll-margin-top: 24px; }
+  .settings-section-list > .dx-section-card { scroll-margin-top: 16px; }
+  .cx-row:first-child { padding-top: 4px; }
+  .cx-row-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .cx-row-num { flex: none; width: 22px; font-family: var(--t-font-mono); font-size: 12px; color: var(--t-muted); font-variant-numeric: tabular-nums; }
+  .cx-row-title { flex: 1 1 220px; min-width: 0; display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; margin: 0; font-size: 14px; }
+  .cx-row-slug { font-family: var(--t-font-mono); font-size: 11.5px; color: var(--t-muted); }
+  .cx-row--off .cx-row-title strong { color: var(--t-muted); }
+  .cx-row-ops { display: flex; align-items: center; gap: 6px; margin: 0; flex: none; }
+  .cx-remove:hover { color: var(--t-danger); }
+  .cx-row > .cx-status-line, .cx-row > .cx-warn { margin-left: 32px; }
+  .cx-status-line { margin: 6px 0 0; font-size: 12.5px; color: var(--t-fg-soft); }
+  .cx-kind { font-family: var(--t-font-mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--t-muted); margin-right: 8px; }
+  .cx-edit { margin: 10px 0 0 32px; border-top: 0; padding-top: 0; }
+  .cx-edit-form { margin: 0; }
+  .cx-edit-form .field-grid { margin-top: 0; }
+  .cx-edit-form .field-grid > .field { margin-top: 0; padding: 4px 0; border-top: 0; }
+  .cx-edit-actions, .cx-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 10px 0 0; }
+  .cx-tools { padding-top: 10px; border-top: 1px solid var(--dx-border-faint, #f1f0eb); }
+  /* Not a text box: outranks the settings body's input style. */
+  .dx-section-body .cx-tools input.cx-file { width: auto; max-width: 100%; height: auto; min-height: 0; padding: 0; border: 0; background: none; font-size: 12.5px; }
+  .cx-tools-help { margin: 6px 0 0; }
+  .cx-add { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 8px; margin: 14px 0 0; padding-top: 10px; border-top: 1px solid var(--dx-border-faint, #f1f0eb); }
+  .cx-add-full { margin: 14px 0 0; }
+  /* The log: one grid, a row per entry (when, source, outcome, what), so
+     the columns line up and a long line wraps in its own column. On a
+     phone the what drops under the other three. */
+  .cx-log { display: grid; grid-template-columns: max-content max-content max-content minmax(0, 1fr); column-gap: 2ch; row-gap: 3px; align-content: start; margin: 4px 0 0; max-height: 360px; white-space: normal; }
+  .cx-log-line { display: contents; }
+  .cx-log-when, .cx-log-outcome { color: var(--t-muted); white-space: nowrap; }
+  .cx-log-source { white-space: nowrap; }
+  .cx-log-text { overflow-wrap: anywhere; }
+  .cx-log-line--bad .cx-log-outcome { color: var(--t-danger); font-weight: 600; }
+  .cx-log-line--warn .cx-log-outcome { color: color-mix(in oklab, var(--t-warn) 80%, var(--t-fg)); font-weight: 600; }
+  .cx-log:focus-visible { outline: 2px solid var(--t-accent); outline-offset: 2px; }
+  /* Space between comics: one ruled row, a legend over three short
+     fields side by side. */
+  .cx-space { margin: 0; padding: 14px 0 0; border-left: 0; border-right: 0; border-bottom: 0; min-width: 0; }
+  .cx-space-legend { float: left; width: 100%; display: flex; align-items: center; gap: 6px; padding: 0; font-size: 13px; font-weight: 600; color: var(--t-fg); }
+  .cx-gaps { clear: both; display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); column-gap: 16px; align-items: end; }
+  .cx-gaps > .field { padding-top: 8px; margin-top: 0; border-top: 0; }
+  .cx-unit { font-family: var(--t-font-mono); font-size: 11px; font-weight: 400; color: var(--t-muted); }
+  @media (max-width: 900px) {
+    .cx-today { grid-template-columns: minmax(0, 1fr); gap: 20px; }
+    .cx-onscreen { position: static; }
+    .cx-screen-frame { --fit: 340px; }
+  }
+  @media (max-width: 640px) {
+    .cx-log { grid-template-columns: max-content minmax(0, 1fr) max-content; row-gap: 0; font-size: 11.5px; }
+    .cx-log-text { grid-column: 1 / -1; margin-bottom: 8px; }
+    .cx-log-source { overflow: hidden; text-overflow: ellipsis; }
+    .cx-row > .cx-status-line, .cx-row > .cx-warn, .cx-edit { margin-left: 0; }
+  }
+</style>
+{% endblock %}
