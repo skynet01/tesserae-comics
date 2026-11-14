@@ -37,7 +37,7 @@
 {% block main %}
 {% set source_help = "xkcd fetches a comic from xkcd's own API each day. Direct image URL downloads the Image URL each day. Manual upload shows the picture you upload." %}
 {% set pick_help = "For xkcd: the latest comic (xkcd posts Monday, Wednesday and Friday), or a random one from the archive, a new one each day." %}
-{% set url_help = "For Direct image URL: the address of a picture on the public web, downloaded again each day." %}
+{% set url_help = "For Direct image URL: the full http:// or https:// address of the image file. Downloaded again each day." %}
 
 <div class="page-head">
   <h1><i class="ph ph-smiley" aria-hidden="true"></i> Comics, Strips</h1>
@@ -147,7 +147,7 @@
               {{ text_input(fid ~ '-label', 'label', 'Label', row.label, placeholder=st.label, help="The name the page and its notes use. Leave it blank for the default.") }}
               {{ select_field(fid ~ '-mode', 'mode', 'Source', row.mode, mode_choices, help=source_help) }}
               {{ select_field(fid ~ '-pick', 'pick', 'Which xkcd comic', row.pick, pick_choices, help=pick_help) }}
-              {{ text_input(fid ~ '-image_url', 'image_url', 'Image URL', row.image_url, placeholder='https://…', autocapitalize='off', help=url_help) }}
+              {{ text_input(fid ~ '-image_url', 'image_url', 'Image URL', row.image_url, placeholder='https://imgs.xkcd.com/comics/barrel_cropped_(1).jpg', autocapitalize='off', help=url_help) }}
             </div>
             <div class="cx-edit-actions">
               <button type="submit" class="dx-btn-ghost-sm"><i class="ph ph-floppy-disk" aria-hidden="true"></i><span>Save strip</span></button>
@@ -171,7 +171,7 @@
       {{ select_field('cx-add-mode', 'mode', 'Source', 'xkcd', mode_choices) }}
       {{ text_input('cx-add-label', 'label', 'Label', '', placeholder='xkcd') }}
       {{ select_field('cx-add-pick', 'pick', 'Which xkcd comic', 'latest', pick_choices) }}
-      {{ text_input('cx-add-image_url', 'image_url', 'Image URL', '', placeholder='https://…', autocapitalize='off') }}
+      {{ text_input('cx-add-image_url', 'image_url', 'Image URL', '', placeholder='https://imgs.xkcd.com/comics/barrel_cropped_(1).jpg', autocapitalize='off', help=url_help) }}
     </div>
     <button type="submit" class="dx-btn-ghost-sm"><i class="ph ph-plus" aria-hidden="true"></i><span>Add strip</span></button>
   </form>
@@ -190,7 +190,7 @@
       <div class="cx-gaps">
         {%- for name, short in [('gap_min', 'Smallest'), ('gap', 'Usual'), ('gap_max', 'Largest')] %}
         {%- set _, _, lo, hi = numbers[name] %}
-        {{ number_input('cx-' ~ name, name, short, value=values[name], min=lo, max=hi, step=1) }}
+        {{ number_input('cx-' ~ name, name, short, value=values[name], min=lo, max=hi, step=1, placeholder=numbers[name][1]|string) }}
         {%- endfor %}
       </div>
     </fieldset>

@@ -4,5 +4,9 @@
   "no_comics": "No comics to show yet.",
   "not_updated": "Not updated today",
   "not_a_strip": "can't show",
-  "too_small": "Too small a space for a comic."
+  "too_small": "Too small a space for a comic.",
+  "settings.image_url.placeholder": "https://imgs.xkcd.com/comics/barrel_cropped_(1).jpg",
+  "settings.gap_min.placeholder": "6",
+  "settings.gap.placeholder": "32",
+  "settings.gap_max.placeholder": "48"
 }
