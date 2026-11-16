@@ -2,12 +2,12 @@
   "tesserae_compat": "1.x",
   "tesserae_min": "0.484.1",
   "name": "Comics, Strips",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "kind": "widget",
   "locales": [
     "en"
   ],
-  "description": "Comic strips on one page, full width and in your order: xkcd (the latest or a random one, with its title and alt text, credited to xkcd.com), any picture address fetched daily, or your own upload. As many as fit, never cut off; small screens take turns. Set up on its admin page.",
+  "description": "Today's comics on one page: The Far Side's daily panels in a row with their captions, then GoComics strips (Garfield, Calvin and Hobbes, Pearls Before Swine, or any other) an archived Dilbert and the latest xkcd, full width and in your order. As many rows as fit without cutting one off. Pick the comics on its admin page, Widgets \u2192 Admin pages \u2192 Comics, Strips, and every cell shows them. Fetched in the background once a day (or with Fetch now); when a site blocks a download the last good strip stays up, a small note says so, and you can upload or import that day's strip.",
   "icon": "ph-smiley",
   "category": "reading",
   "supports": {
@@ -33,6 +33,15 @@
     ]
   },
   "requires": [
-    "network:*"
+    "network:www.gocomics.com",
+    "network:featureassets.gocomics.com",
+    "network:assets.amuniversal.com",
+    "network:featureassets.amuniversal.com",
+    "network:www.thefarside.com",
+    "network:dilbert-viewer.herokuapp.com",
+    "network:web.archive.org",
+    "network:xkcd.com",
+    "network:imgs.xkcd.com",
+    "settings:plugin"
   ]
 }

@@ -1,13 +1,14 @@
-// comics_strips, today's comics as one page: each strip at the cell's full
-// width, in the order the admin page lists them. An xkcd comic carries its
-// title, its alt text and the xkcd.com credit underneath. Tuned on a
-// 1440 x 2560 portrait panel.
+// comics_strips, today's comics as one page. The Far Side's panels sit in
+// a row on top with their captions; the strips follow full width, in the
+// order the cell lists them. Tuned on a 1440 x 2560 portrait panel.
 //
 // Fitting is measured, not estimated: the page is drawn, each row's height
 // read back, and planRows() keeps as many rows as fit. It tries the
 // standard gap first, then squeezes the gaps down to the smallest, and only
-// then leaves the last row out, so no strip is ever cut off. Leftover height
-// widens the gaps (up to the largest) and the rest centres the page.
+// then, when the whole page is only a little too tall, draws every row slightly
+// narrower (MIN_PAGE_SHRINK at most). Only past that does it leave the last row
+// out, so no strip is ever cut off. Leftover height widens the gaps (up to the
+// largest) and the rest centres the page.
 //
 // The page's styles are inline rather than in the shared stylesheet: a
 // <link> applies a tick after innerHTML, and measuring before it lands would
@@ -16,6 +17,9 @@
 
 // Content width (1440 less 16 px padding a side) the gaps are given for.
 const REF_WIDTH = 1408;
+// Narrowest a Far Side panel gets before the row drops one.
+const MIN_PANEL_PX = 260;
+const MAX_PANELS = 4;
 // Spare pixels so rounding never pushes the last row past the edge.
 const SAFETY_PX = 16;
 const SETTLE_MS = 1500;
@@ -37,7 +41,15 @@ export function scaleFor(width) {
   return Math.min(1, width / REF_WIDTH);
 }
 
-// The gap options, sanitised and scaled: gap_min <= gap <= gap_max.
+// How many Far Side panels the row carries at this width.
+export function farSideColumns(width, wanted) {
+  const want = Math.max(0, Math.min(MAX_PANELS, Math.floor(Number(wanted) || 0)));
+  if (!want) return 0;
+  if (!(width > 0)) return want;
+  return Math.max(1, Math.min(want, Math.floor(width / MIN_PANEL_PX)));
+}
+
+// The cell's gap options, sanitised and scaled: gap_min <= gap <= gap_max.
 export function gapsFor(opts, scale = 1) {
   const num = (value, fallback) => {
     const n = Number(value);
@@ -58,11 +70,29 @@ export function shrinkFor(height, available) {
   return Math.floor((available / height) * 1000) / 1000;
 }
 
+// The narrowest a whole page is drawn to keep every row on it. screen.py's
+// SHRINK_FLOOR is a little above this: its heights are estimates, these measured.
+export const MIN_PAGE_SHRINK = 0.9;
+
+// How much narrower to draw every row so they all fit at the smallest gap:
+// 1 when they already fit, 0 when it would take more than MIN_PAGE_SHRINK.
+// Rows scale with their width, so the shrink is the ratio of the heights.
+export function pageShrinkFor(heights, available, gaps) {
+  const content = heights.reduce((sum, h) => sum + h, 0);
+  if (!(content > 0) || !Number.isFinite(content)) return 0;
+  const room = available - gaps.min * Math.max(0, heights.length - 1);
+  if (content <= room) return 1;
+  const shrink = Math.floor((room / content) * 1000) / 1000;
+  return shrink >= MIN_PAGE_SHRINK ? shrink : 0;
+}
+
 // Which rows to keep and the gap between them, given each row's height and
 // the height available. A row taller than the whole box can never show, so
-// it is passed over. Of the rest, the longest run from the top that fits
-// wins: standard gap first, widened toward the largest gap with what is
-// left over; else the gap squeezed toward the smallest; else one row fewer.
+// it is passed over (a short landscape cell still gets its strips when the
+// Far Side row is too tall). Of the rest, the longest run from the top that
+// fits wins: standard gap first, widened toward the largest gap with what
+// is left over; else the gap squeezed toward the smallest; else one row
+// fewer.
 export function planRows(heights, available, gaps) {
   const candidates = [];
   heights.forEach((h, i) => {
@@ -97,7 +127,8 @@ function shortDate(iso, locale) {
 }
 
 // One quiet line naming what isn't today's: a stale strip with the day it
-// is from, a missing one by name, a strip that can't be shown.
+// is from, a missing one by name, a line of the Strips option that isn't a
+// strip.
 export function noteText(notes, t, locale) {
   if (!Array.isArray(notes) || !notes.length) return "";
   const parts = notes.map((note) => {
@@ -106,21 +137,10 @@ export function noteText(notes, t, locale) {
       const since = shortDate(note.since, locale);
       return since ? `${label} (${since})` : label;
     }
-    if (note?.state === "invalid") return `${label} (${t("not_a_strip", "can't show")})`;
+    if (note?.state === "invalid") return `${label} (${t("not_a_strip", "not a strip")})`;
     return label;
   });
   return `${t("not_updated", "Not updated today")}: ${parts.join(", ")}`;
-}
-
-// The text under a strip: an xkcd comic's title and credit, then its alt
-// text; just the credit with captions off; nothing for other strips. As
-// server.py's caption_lines(), which estimates the same height.
-export function captionHtml(strip, captions) {
-  const credit = strip?.credit ? String(strip.credit) : "";
-  if (!credit) return "";
-  const title = captions && strip.title ? `<strong>${escapeHtml(strip.title)}</strong> ` : "";
-  const alt = captions && strip.alt ? `<p class="cap-alt">${escapeHtml(strip.alt)}</p>` : "";
-  return `<div class="cap"><p class="cap-head">${title}<span class="cap-credit">${escapeHtml(credit)}</span></p>${alt}</div>`;
 }
 
 const STYLE = `
@@ -139,7 +159,7 @@ const STYLE = `
     display: flex; flex-direction: column; justify-content: safe center;
   }
   .row { flex: none; }
-  .row[hidden] { display: none; }
+  .row[hidden], .panel[hidden] { display: none; }
   .strip img { display: block; width: 100%; height: auto; margin: 0 auto; }
   .cap {
     padding-top: clamp(3px, 0.6cqw, 12px);
@@ -147,9 +167,15 @@ const STYLE = `
     font-size: clamp(10px, 1.1cqw, 24px); line-height: 1.3;
     overflow-wrap: anywhere;
   }
-  .cap p { margin: 0; }
-  .cap-credit { color: var(--text-muted); white-space: nowrap; }
-  .cap-alt { color: var(--text-secondary, var(--text-primary)); }
+  .fs-row { display: flex; align-items: flex-start; gap: clamp(4px, 0.55cqw, 12px); }
+  .panel { flex: 1 1 0; min-width: 0; margin: 0; padding: clamp(4px, 1.05cqw, 20px) clamp(2px, 0.35cqw, 8px); }
+  .panel img { display: block; width: 100%; height: auto; }
+  .panel figcaption {
+    margin-top: clamp(4px, 1.05cqw, 20px);
+    font-family: Georgia, "DejaVu Serif", serif;
+    font-size: clamp(11px, 1.2cqw, 26px); line-height: 1.3;
+    text-align: center; overflow-wrap: anywhere;
+  }
   .too-small {
     margin: auto; font-family: var(--font-family, inherit);
     font-size: clamp(10px, 40cqh, 16px); color: var(--text-muted); text-align: center;
@@ -162,11 +188,21 @@ const STYLE = `
   }
 `;
 
+function panelHtml(panel, captions) {
+  const caption = captions && panel.caption
+    ? `<figcaption>${escapeHtml(panel.caption)}</figcaption>`
+    : "";
+  return `<figure class="panel">
+      <img src="${escapeHtml(panel.src)}" width="${Number(panel.w) || 1}" height="${Number(panel.h) || 1}" alt="${escapeHtml(panel.caption || "The Far Side")}">
+      ${caption}
+    </figure>`;
+}
+
 function stripHtml(strip, captions) {
-  const alt = strip.title ? `${strip.label}: ${strip.title}` : strip.label;
   return `<div class="row strip" data-w="${Number(strip.w) || 1}" data-h="${Number(strip.h) || 1}">
-      <img src="${escapeHtml(strip.src)}" width="${Number(strip.w) || 1}" height="${Number(strip.h) || 1}" alt="${escapeHtml(alt)}">
-      ${captionHtml(strip, captions)}
+      <img src="${escapeHtml(strip.src)}" width="${Number(strip.w) || 1}" height="${Number(strip.h) || 1}" alt="${escapeHtml(strip.label)}">
+      ${captions && strip.caption ? `<div class="cap">${escapeHtml(strip.caption)}</div>` : ""}
+      ${strip.credit ? `<div class="cap cap-credit">${escapeHtml(strip.credit)}</div>` : ""}
     </div>`;
 }
 
@@ -176,7 +212,7 @@ function settle() {
   return Promise.race([document.fonts.ready, new Promise((r) => setTimeout(r, SETTLE_MS))]);
 }
 
-function fit(shadow, opts, tooSmall) {
+function fit(shadow, opts, wantedPanels, tooSmall) {
   const box = shadow.querySelector(".rows");
   if (!box) return;
   box.querySelector(".too-small")?.remove();
@@ -185,25 +221,60 @@ function fit(shadow, opts, tooSmall) {
   // A detached host has no size; leave the natural flow alone.
   if (!(width > 0) || !(available > 0)) return;
 
-  // A strip taller than the box would never fit; narrow its picture until
-  // the picture and its caption do, so a wide, short cell still shows
-  // strips rather than nothing. Narrowed past MIN_ZOOM of the width it
-  // can't be made out, and doesn't count.
+  const columns = farSideColumns(width, wantedPanels);
+  shadow.querySelectorAll(".panel").forEach((panel, i) => { panel.hidden = i >= columns; });
+
+  // A strip taller than the box would never fit; narrow it until it does,
+  // so a wide, short cell still shows strips rather than nothing. Narrowed
+  // past MIN_ZOOM of the width it can't be made out, and doesn't count.
   const unreadable = new Set();
   for (const row of shadow.querySelectorAll(".strip")) {
     const ratio = Number(row.dataset.w) / Number(row.dataset.h);
     const img = row.querySelector("img");
     if (!img || !(ratio > 0)) continue;
-    const caption = row.querySelector(".cap")?.getBoundingClientRect().height || 0;
-    const room = Math.max(0, available - caption);
-    img.style.maxWidth = `${Math.floor(room * ratio)}px`;
-    if (room * ratio < MIN_ZOOM * width) unreadable.add(row);
+    img.style.maxWidth = `${Math.floor(available * ratio)}px`;
+    if (available * ratio < MIN_ZOOM * width) unreadable.add(row);
   }
 
   const rows = [...box.querySelectorAll(".row")];
-  rows.forEach((row) => { row.hidden = false; row.style.zoom = ""; });
-  const heights = rows.map((row) => (unreadable.has(row) ? Infinity : row.getBoundingClientRect().height));
-  const plan = planRows(heights, available, gapsFor(opts, scaleFor(width)));
+  rows.forEach((row) => {
+    row.hidden = false;
+    row.style.zoom = "";
+    row.style.width = "";
+    row.style.marginInline = "";
+  });
+  const measure = () => rows.map((row) => (unreadable.has(row) ? Infinity : row.getBoundingClientRect().height));
+  const gaps = gapsFor(opts, scaleFor(width));
+  const heights = measure();
+
+  // Only a little too tall: narrow every row and measure again (a caption can
+  // reflow), rather than lose a comic.
+  let shrink = pageShrinkFor(heights, available, gaps);
+  if (shrink > 0 && shrink < 1) {
+    let total = 1;
+    while (shrink > 0 && shrink < 1) {
+      total *= shrink;
+      if (total < MIN_PAGE_SHRINK) { shrink = 0; break; }
+      for (const row of rows) {
+        row.style.width = `${total * 100}%`;
+        row.style.marginInline = "auto";
+      }
+      shrink = pageShrinkFor(measure(), available, gaps);
+    }
+    if (shrink === 1) {
+      const final = measure();
+      const content = final.reduce((sum, h) => sum + h, 0);
+      const between = Math.max(1, rows.length - 1);
+      box.style.gap = `${Math.max(gaps.min, Math.floor((available - content) / between))}px`;
+      return;
+    }
+    for (const row of rows) {
+      row.style.width = "";
+      row.style.marginInline = "";
+    }
+  }
+
+  const plan = planRows(heights, available, gaps);
   let keep = plan.keep;
   if (!keep.length) {
     // Nothing fits whole (one comic a turn on a small screen, still too
@@ -233,8 +304,10 @@ function fit(shadow, opts, tooSmall) {
 export default async function render(shadow, ctx) {
   const t = ctx?.t || ((key, fallback) => fallback ?? key);
   const data = ctx?.data ?? {};
-  // The layout comes from the widget's admin page, sent with the data.
-  const opts = { ...(data.layout || {}) };
+  // The layout comes from the widget's settings (the Comics admin page),
+  // sent with the data; a cell's own old options only fill in for a server
+  // that doesn't send it.
+  const opts = { ...(ctx?.cell?.options || {}), ...(data.layout || {}) };
   const css = `<link rel="stylesheet" href="/static/style/spectra-widgets.css">`;
 
   if (data.error) {
@@ -247,10 +320,12 @@ export default async function render(shadow, ctx) {
     return;
   }
 
+  const showFarSide = isOn(opts.far_side, true);
+  const panels = showFarSide && Array.isArray(data.farside) ? data.farside : [];
   const strips = Array.isArray(data.strips) ? data.strips : [];
   const note = isOn(opts.status_note, true) ? noteText(data.notes, t, ctx?.locale) : "";
 
-  if (!strips.length) {
+  if (!panels.length && !strips.length) {
     const message = data.updating
       ? t("fetching", "Fetching today's comics…")
       : t("no_comics", "No comics to show yet.");
@@ -267,10 +342,11 @@ export default async function render(shadow, ctx) {
     <style>${STYLE}</style>
     <div class="comics" data-widget="comics_strips">
       <div class="rows">
-        ${strips.map((s) => stripHtml(s, captions)).join("")}
+        ${panels.length ? `<div class="row fs-row">${panels.map((p) => panelHtml(p, captions)).join("")}</div>` : ""}
+        ${strips.map((strip) => stripHtml(strip, captions)).join("")}
       </div>
       ${note ? `<div class="note">${escapeHtml(note)}</div>` : ""}
     </div>`;
   await settle();
-  fit(shadow, opts, t("too_small", "Too small a space for a comic."));
+  fit(shadow, opts, panels.length, t("too_small", "Too small a space for a comic."));
 }

@@ -5,15 +5,19 @@ strips on one page, each at the cell's full width, in the order you choose.
 
 ## Sources
 
-Each strip in the list takes its picture from one of three places:
+The Far Side's daily panels appear in a row above the strips. Each strip can use:
+
+- **Automatic**: a GoComics strip such as Garfield or Calvin and Hobbes,
+  an archived Dilbert, or the latest xkcd. GoComics can use its browser
+  challenge session or cookies pasted on the admin page.
 
 - **xkcd**, from xkcd's official JSON API (`https://xkcd.com/info.0.json`
   for the latest comic, `https://xkcd.com/<num>/info.0.json` for a numbered
   one). Choose the latest comic or a random one from the archive (a new one
   each day, the same one all day). The comic's title and its alt text are
   shown under it as the caption.
-- **Direct image URL**: the address of any picture on the public web,
-  downloaded again each day.
+- **Direct image URL**: a picture on one of the comic hosts listed in the
+  manifest, downloaded again each day.
 - **Manual upload**: a PNG, JPEG, GIF or WebP you upload on the admin page,
   shown until you switch the strip to another source.
 
@@ -36,7 +40,9 @@ them. The page has:
   and the out-of-date note.
 - **Fetches**: a log of every fetch and upload.
 
-It starts with one strip, the latest xkcd.
+New installs start with The Far Side, Dilbert, Garfield, Calvin and Hobbes,
+and Pearls Before Swine. Existing strip lists and xkcd selections are kept.
+Dilbert can be switched off; its built-in row stays in the list.
 
 ## How the layout works
 
@@ -60,7 +66,7 @@ background (and on **Fetch now**); a failure keeps the last good picture up,
 retries with a backoff (30 minutes doubling to 6 hours, at most six tries a
 day), and the small out-of-date note says which strip is behind. xkcd posts on
 Mondays, Wednesdays and Fridays, so "latest" is often the same comic for a
-couple of days: that is not an error and the picture isn't downloaded again.
+couple of days: that is not an error.
 
 Everything lives in the widget's data folder: `config.json` (the settings,
 written atomically), `state.json`, `log.json`, `turns.json` and `images/`.
@@ -69,11 +75,12 @@ is kept under 200 MB.
 
 ## Network
 
-Every download goes through Tesserae's SSRF-guarded fetch (`app.net_guard`):
+Every download goes through Tesserae's guarded opener (`app.net_guard`):
 public web addresses only, each redirect checked, sizes capped (20 MB a
-picture). The manifest declares `network:*` because a direct image URL can be
-any host; the hosts actually reached are `xkcd.com`, `imgs.xkcd.com` and the
-image addresses you enter. The widget reads no settings and stores no secrets.
+picture). The manifest lists the GoComics, Far Side, Dilbert archive and
+xkcd hosts it can reach. GoComics cookies pasted on the admin page are kept
+in Tesserae's encrypted settings store. Its browser session stays in a
+private cookie file in the widget's data folder.
 
 ## Requirements
 

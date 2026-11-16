@@ -4,9 +4,10 @@ The admin page (/plugins/comics_strips/) is the only place the comics are
 chosen, and every comics cell shows them, so they are the widget's own data
 like the todo widget's lists, not manifest settings. The file holds::
 
-    strips          the strip rows in order: enabled, label, slug, mode,
-                    pick, image_url
-    captions        the xkcd title and alt text under a strip (a switch)
+    strips          the strip rows in order: enabled, label, slug, mode, image_url
+    far_side        the Far Side's panels on top (a switch)
+    far_side_count  how many panels, 1 to 4
+    captions        the caption under each panel (a switch)
     small_screens   "fit" (as many as fit) or "one" (one at a time)
     gap_min, gap, gap_max   the space between comics, in px at 1440 wide
     status_note     the small out-of-date line (a switch)
@@ -43,34 +44,43 @@ logger = logging.getLogger(__name__)
 FILE_NAME = "config.json"
 VERSION = 1
 MAX_STRIPS = 8
-# Where a strip's picture comes from.
-MODES = ("xkcd", "url", "upload")
-# Which xkcd comic an xkcd strip shows.
-PICKS = ("latest", "random")
+# Built into the list: it can be switched off, not removed or renamed.
+FIXED_SLUG = "dilbert"
+MODES = ("auto", "upload", "url", "xkcd")
 SMALL_SCREENS = ("fit", "one")
 LABEL_MAX = 60
 SLUG_MAX = 64
 URL_MAX = 2000
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
-SLUG_HINT = "lower-case letters, digits and -"
+SLUG_HINT = "a GoComics name like garfield (lower-case letters, digits and -), dilbert or xkcd"
 
 DEFAULT_STRIPS: tuple[dict[str, Any], ...] = (
+    {"enabled": True, "label": "Dilbert", "slug": "dilbert", "mode": "auto", "image_url": ""},
+    {"enabled": True, "label": "Garfield", "slug": "garfield", "mode": "auto", "image_url": ""},
     {
         "enabled": True,
-        "label": "xkcd",
-        "slug": "xkcd",
-        "mode": "xkcd",
-        "pick": "latest",
+        "label": "Calvin and Hobbes",
+        "slug": "calvinandhobbes",
+        "mode": "auto",
+        "image_url": "",
+    },
+    {
+        "enabled": True,
+        "label": "Pearls Before Swine",
+        "slug": "pearlsbeforeswine",
+        "mode": "auto",
         "image_url": "",
     },
 )
 # name: (label, default)
 SWITCHES: dict[str, tuple[str, bool]] = {
+    "far_side": ("The Far Side", True),
     "captions": ("Captions", True),
     "status_note": ("Out-of-date note", True),
 }
 # name: (label, default, lowest, highest)
 NUMBERS: dict[str, tuple[str, int, int, int]] = {
+    "far_side_count": ("Panels", 4, 1, 4),
     "gap_min": ("Smallest space", 6, 0, 200),
     "gap": ("Usual space", 32, 0, 200),
     "gap_max": ("Largest space", 48, 0, 400),
@@ -82,6 +92,8 @@ CHOICES: dict[str, tuple[str, str, tuple[str, ...]]] = {
 _TRUE = frozenset({"true", "on", "1", "yes"})
 _FALSE = frozenset({"false", "off", "0", "no", ""})
 
+LegacyRows = Callable[[str], list[dict[str, Any]]]
+
 
 def defaults() -> dict[str, Any]:
     """A fresh copy of every value's default."""
@@ -92,20 +104,17 @@ def defaults() -> dict[str, Any]:
     return values
 
 
+# The settings as the widget kept them in settings.json (section ``plugins``,
+# key ``comics_strips``) before this file existed, for SettingsStore's
+# get_for_runtime: read once, to start config.json from.
+LEGACY_FIELDS: tuple[dict[str, Any], ...] = tuple(
+    {"name": name, "default": value} for name, value in defaults().items()
+)
+LEGACY_KEYS: tuple[str, ...] = tuple(str(field["name"]) for field in LEGACY_FIELDS)
+
+
 class ConfigError(ValueError):
     """A value that can't be saved. The message is fit for the page."""
-
-
-def new_slug(text: str, taken: set[str] | frozenset[str]) -> str:
-    """A row's id from what it is called: lower-case words joined by -, made
-    unique among ``taken`` with a number. Rows keep their id for good (it
-    names the strip's records on disk), whatever they are renamed to."""
-    base = re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")[: SLUG_MAX - 4] or "strip"
-    slug, n = base, 2
-    while slug in taken:
-        slug = f"{base}-{n}"
-        n += 1
-    return slug
 
 
 # -- strict: what a save may store ------------------------------------------------
@@ -113,7 +122,7 @@ def new_slug(text: str, taken: set[str] | frozenset[str]) -> str:
 
 def is_web_address(text: str) -> bool:
     """An http(s) address with a host that parses. Where it points is
-    judged elsewhere (the net guard)."""
+    judged elsewhere (the allowed hosts, the net guard)."""
     if any(c.isspace() for c in text):
         return False
     try:
@@ -165,35 +174,38 @@ def check_row(raw: Any, where: str) -> dict[str, Any]:
     """One strip row as it may be stored, or ConfigError."""
     if not isinstance(raw, dict):
         raise ConfigError(f"{where}: expected a strip.")
-    slug = _text(raw.get("slug"), "Id", SLUG_MAX, where)
+    enabled = raw.get("enabled", True)
+    slug = _text(raw.get("slug"), "Strip", SLUG_MAX, where)
     if not slug:
-        raise ConfigError(f"{where}: Id is required.")
+        raise ConfigError(f"{where}: Strip is required.")
     if not SLUG_RE.match(slug):
-        raise ConfigError(f"{where}: Id: {SLUG_HINT}.")
-    mode = raw.get("mode") or "xkcd"
+        raise ConfigError(f"{where}: Strip: {SLUG_HINT}.")
+    mode = raw.get("mode") or "auto"
     if mode not in MODES:
         raise ConfigError(f"{where}: {mode!r} isn't one of the choices for Source.")
-    pick = raw.get("pick") or "latest"
-    if pick not in PICKS:
-        raise ConfigError(f"{where}: {pick!r} isn't one of the choices for Which comic.")
     image_url = _text(raw.get("image_url"), "Image URL", URL_MAX, where)
     if image_url and not is_web_address(image_url):
         raise ConfigError(
             f"{where}: Image URL must be a web address starting with https:// or http://."
         )
-    return {
-        "enabled": _switch(raw.get("enabled", True), f"{where}: Enabled"),
+    row = {
+        "enabled": _switch(enabled, f"{where}: Enabled"),
         "label": _text(raw.get("label"), "Label", LABEL_MAX, where),
         "slug": slug,
         "mode": str(mode),
-        "pick": str(pick),
         "image_url": image_url,
     }
+    if mode == "xkcd":
+        pick = raw.get("pick", "latest")
+        if pick not in ("latest", "random"):
+            raise ConfigError(f"{where}: choose latest or random for xkcd.")
+        row["pick"] = pick
+    return row
 
 
 def check_rows(raw: Any) -> list[dict[str, Any]]:
     """The strip rows as they may be stored: at most MAX_STRIPS, each one
-    checked, no strip twice."""
+    checked, no strip twice, and the built-in Dilbert row kept."""
     if not isinstance(raw, list):
         raise ConfigError("Strips: expected a list of strips.")
     if len(raw) > MAX_STRIPS:
@@ -206,6 +218,10 @@ def check_rows(raw: Any) -> list[dict[str, Any]]:
             raise ConfigError(f"{row['slug']} is already in the list.")
         seen.add(row["slug"])
         rows.append(row)
+    if FIXED_SLUG not in seen:
+        raise ConfigError(
+            "The Dilbert strip is built in and can't be removed or renamed (switch it off instead)."
+        )
     return rows
 
 
@@ -213,12 +229,13 @@ def check(values: dict[str, Any]) -> dict[str, Any]:
     """Every value as it may be stored, or ConfigError naming the first that
     doesn't fit. A missing value takes its default; unknown keys go."""
     out: dict[str, Any] = {"strips": check_rows(values.get("strips", defaults()["strips"]))}
+    default: Any
     for name, (label, default) in SWITCHES.items():
         out[name] = _switch(values.get(name, default), label)
-    for name, (label, number, low, high) in NUMBERS.items():
-        out[name] = _number(values.get(name, number), label, low, high)
-    for name, (label, choice, choices) in CHOICES.items():
-        value = values.get(name, choice)
+    for name, (label, default, low, high) in NUMBERS.items():
+        out[name] = _number(values.get(name, default), label, low, high)
+    for name, (label, default, choices) in CHOICES.items():
+        value = values.get(name, default)
         if value not in choices:
             raise ConfigError(f"{value!r} isn't one of the choices for {label}.")
         out[name] = value
@@ -253,10 +270,20 @@ def _line(value: Any, limit: int) -> str:
     return " ".join(value.split())[:limit]
 
 
-def normalise_rows(value: Any) -> list[dict[str, Any]]:
-    """``value`` as strip rows, never raising. A row without a usable id, or
-    naming one already listed, is dropped; other values that don't fit take
-    their defaults."""
+def normalise_rows(value: Any, legacy_rows: LegacyRows | None = None) -> list[dict[str, Any]]:
+    """``value`` as strip rows, never raising. A list (or a JSON string of
+    one) keeps its strips; any other text is the widget's older one-per-line
+    Strips value, turned into rows by ``legacy_rows`` when given. A row
+    without a usable strip name, or naming one already listed, is dropped;
+    other values that don't fit take their defaults. The Dilbert row is put
+    back (switched off) when missing."""
+    if isinstance(value, str) and value.strip().startswith("["):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            value = []
+    if isinstance(value, str):
+        value = legacy_rows(value) if legacy_rows is not None else []
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
     for item in value if isinstance(value, list) else []:
@@ -266,33 +293,40 @@ def normalise_rows(value: Any) -> list[dict[str, Any]]:
         if len(slug) > SLUG_MAX or not SLUG_RE.match(slug) or slug in seen:
             continue
         seen.add(slug)
-        mode, pick = item.get("mode"), item.get("pick")
+        mode = item.get("mode")
         rows.append(
             {
                 "enabled": _lenient_switch(item.get("enabled", True), True),
                 "label": _line(item.get("label"), LABEL_MAX),
                 "slug": slug,
-                "mode": mode if mode in MODES else "xkcd",
-                "pick": pick if pick in PICKS else "latest",
+                "mode": mode if mode in MODES else "auto",
                 "image_url": _line(item.get("image_url"), URL_MAX),
             }
         )
+        if mode == "xkcd":
+            rows[-1]["pick"] = "random" if item.get("pick") == "random" else "latest"
+    if FIXED_SLUG not in seen:
+        rows = rows[: MAX_STRIPS - 1]
+        rows.append({**DEFAULT_STRIPS[0], "enabled": False})
     return rows
 
 
-def normalise(values: Any) -> dict[str, Any]:
+def normalise(values: Any, legacy_rows: LegacyRows | None = None) -> dict[str, Any]:
     """Every value, never raising: what doesn't fit takes its default."""
     values = values if isinstance(values, dict) else {}
     base = defaults()
     out: dict[str, Any] = {
-        "strips": normalise_rows(values["strips"]) if "strips" in values else base["strips"]
+        "strips": normalise_rows(values["strips"], legacy_rows)
+        if "strips" in values
+        else base["strips"]
     }
+    default: Any
     for name, (_, default) in SWITCHES.items():
         out[name] = _lenient_switch(values.get(name, default), default)
-    for name, (_, number, low, high) in NUMBERS.items():
-        out[name] = _lenient_number(values.get(name, number), number, low, high)
-    for name, (_, choice, choices) in CHOICES.items():
-        out[name] = values.get(name) if values.get(name) in choices else choice
+    for name, (_, default, low, high) in NUMBERS.items():
+        out[name] = _lenient_number(values.get(name, default), default, low, high)
+    for name, (_, default, choices) in CHOICES.items():
+        out[name] = values.get(name) if values.get(name) in choices else default
     return out
 
 
@@ -309,8 +343,9 @@ _LOCK: threading.Lock = sys.modules.setdefault(_RUNTIME, ModuleType(_RUNTIME))._
 class ConfigFile:
     """``config.json`` in a widget's data_dir."""
 
-    def __init__(self, data_dir: Path | str) -> None:
+    def __init__(self, data_dir: Path | str, legacy_rows: LegacyRows | None = None) -> None:
         self.path = Path(data_dir) / FILE_NAME
+        self.legacy_rows = legacy_rows
 
     def read(self) -> dict[str, Any] | None:
         """The values on disk (normalised), or None when there is no file.
@@ -328,19 +363,20 @@ class ConfigFile:
         except ValueError:
             logger.warning("comics_strips: %s isn't JSON; showing the defaults", self.path)
             return defaults()
-        return normalise(data)
+        return normalise(data, self.legacy_rows)
 
-    def load(self) -> dict[str, Any]:
-        """The values, starting the file from the defaults when there is
-        none (written only if no save got in first)."""
+    def load(self, seed: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+        """The values, starting the file from ``seed()`` when there is none.
+        The seed is worked out outside the lock (it may read other stores)
+        and written only if no save got in first."""
         found = self.read()
         if found is not None:
             return found
+        values = normalise(seed(), self.legacy_rows)
         with _LOCK:
             found = self.read()
             if found is not None:
                 return found
-            values = defaults()
             self._write(values)
         return values
 

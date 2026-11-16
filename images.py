@@ -3,13 +3,14 @@
 Layout inside the widget's ``data_dir``::
 
     state.json          per source: pictures, edition, last success / attempt, error
-    log.json            the newest LOG_LINES fetches and uploads, for the admin page
-    turns.json          per placement, which strips take the next turn (screen.py)
+    log.json            the newest LOG_LINES fetches, uploads and imports, for the admin page
+    gocomics-cookie-status.json  when the pasted GoComics cookies were set and how they did
     images/<name>       the pictures, named by content hash
+    gocomics-cookies.txt  the Bunny Shield session (written by server.py)
 
-A strip's manual picture (uploaded on the admin page) is a source of its own,
-``manual:<strip>``, stored like a download and never forgotten for age: it
-stays until the strip is switched to another source.
+A strip's manual picture (uploaded, or imported from an address on the admin
+page) is a source of its own, ``manual:<strip>``, stored like a download and
+never forgotten for age: it stays until the strip goes back to Automatic.
 
 A refresh writes a new picture under a new name, then points ``state.json``
 at it, then prunes, so a render reading the old state mid-refresh still
@@ -60,6 +61,7 @@ lifecycle = _lifecycle()
 
 STATE_FILE = "state.json"
 LOG_FILE = "log.json"
+COOKIE_STATUS_FILE = "gocomics-cookie-status.json"
 ROTATION_FILE = "turns.json"
 # When each unused picture was first seen unused (media_lifecycle.py).
 RETIRED_FILE = "retired.json"
@@ -69,14 +71,14 @@ CLEANUP_EVERY_S = 3600
 IMAGE_DIR = "images"
 # The admin page's log keeps this many lines.
 LOG_LINES = 150
-# A picture uploaded by hand: at most this many bytes, and this
+# A picture uploaded or imported by hand: at most this many bytes, and this
 # many pixels once decoded (checked before decoding, so a small file that
 # expands into a huge bitmap is refused rather than decoded).
 MAX_UPLOAD_BYTES = 15 * 1024 * 1024
 MAX_PIXELS = 50_000_000
 MANUAL_PREFIX = "manual:"
-# Strips are shown at most one panel wide (1440 px); anything larger is
-# only bytes for the renderer to wait on.
+# The widest source today is a 1200 px Dilbert; panels are 1440 px across.
+# Anything larger is only bytes for the renderer to wait on.
 MAX_EDGE_PX = 2400
 JPEG_QUALITY = 90
 # A picture no longer referenced stays this long, in case a render that read
@@ -187,10 +189,10 @@ def normalise(raw: bytes, max_edge: int = MAX_EDGE_PX) -> Picture:
     """Decode a downloaded picture and re-encode it for the renderer.
 
     Takes the first frame of an animation, applies EXIF orientation, flattens
-    transparency, caps the size, and writes JPEG for a JPEG source
-    and PNG for everything else (GIF line art keeps its hard edges). Raises
-    ValueError when ``raw`` is not a picture at all, the usual sign of an
-    error page served in its place.
+    transparency, caps the size, and writes JPEG for photographic sources
+    (the Far Side scans) and PNG for everything else (GIF line art keeps its
+    hard edges). Raises ValueError when ``raw`` is not a picture at all,
+    the usual sign of an error or challenge page served in its place.
     """
     size = header_size(raw)
     if size is None or size[0] < 1 or size[1] < 1:
@@ -224,7 +226,7 @@ def normalise(raw: bytes, max_edge: int = MAX_EDGE_PX) -> Picture:
 
 
 def validate_upload(raw: bytes) -> Picture:
-    """A picture uploaded by hand, checked and converted the way
+    """A picture uploaded or imported by hand, checked and converted the way
     a downloaded strip is (:func:`normalise`). Raises ValueError with a
     message for the page: too big, or not a picture."""
     if len(raw) > MAX_UPLOAD_BYTES:
@@ -336,6 +338,30 @@ class Store:
                 _write_atomic(path, json.dumps(turns).encode("utf-8"))
             return chosen
 
+    # -- the pasted GoComics cookies' status --------------------------------
+    # When they were pasted, when they expire, how many, and how the last
+    # GoComics session that used them did. Never the cookies themselves.
+
+    def cookie_status(self) -> dict[str, Any]:
+        try:
+            data = json.loads((self.root / COOKIE_STATUS_FILE).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def update_cookie_status(self, change: Callable[[dict[str, Any]], None] | None) -> None:
+        """Change the status under the store lock; ``None`` forgets it."""
+        with _LOCK:
+            path = self.root / COOKIE_STATUS_FILE
+            if change is None:
+                with contextlib.suppress(FileNotFoundError):
+                    path.unlink()
+                return
+            status = self.cookie_status()
+            change(status)
+            self.root.mkdir(parents=True, exist_ok=True)
+            _write_atomic(path, json.dumps(status, indent=1).encode("utf-8"))
+
     # -- the log --------------------------------------------------------------
 
     def log(self) -> list[dict[str, Any]]:
@@ -399,7 +425,7 @@ class Store:
         nothing points at (media_lifecycle.py's policy).
 
         ``wanted`` is every source the settings still name (each strip in
-        any source, its manual picture), when the caller knows
+        any mode, its manual picture, the Far Side), when the caller knows
         them: a record outside it (a removed or renamed strip, the manual
         picture of a strip that left the list) is forgotten once untouched
         for PRUNE_GRACE_S. Without it, a record is forgotten after
@@ -429,16 +455,17 @@ class Store:
                 return []
             # Still under the lock: no record can point at a picture between
             # the keep set and the deletes, and each delete checks again.
-            gone: list[str] = lifecycle.sweep(
-                self.image_dir,
-                keep=self._referenced(sources),
-                max_bytes=max_bytes,
-                grace_s=PRUNE_GRACE_S,
-                now=now,
-                ledger=self.root / RETIRED_FILE,
-                still_unused=lambda name: name not in self._referenced(self.sources()),
+            return list(
+                lifecycle.sweep(
+                    self.image_dir,
+                    keep=self._referenced(sources),
+                    max_bytes=max_bytes,
+                    grace_s=PRUNE_GRACE_S,
+                    now=now,
+                    ledger=self.root / RETIRED_FILE,
+                    still_unused=lambda name: name not in self._referenced(self.sources()),
+                )
             )
-            return gone
 
     def prune_if_due(
         self, wanted: set[str] | None, now: float | None = None, every: float = CLEANUP_EVERY_S
